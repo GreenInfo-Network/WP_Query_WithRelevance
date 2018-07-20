@@ -74,35 +74,32 @@ class WP_Query_WithRelevance extends WP_Query {
     private function score_taxonomy_relevance() {
         if (! $this->query_vars['tax_query']) return;  // no taxo query = skip it
 
-        // $queried_terms = taxonomy => list of taxo-term IDs, the taxos that were queried
-        // $total_terms = total number of terms queried, between all taxos in $queried_terms
-        $queried_term_ids = array();
+        // taxonomy relevance is only calculated for IN-list operations
+        // for other types of queries, all posts match that value and further scoring would be pointless
+
+        // go over each taxo and each post, tag posts with number of matching terms within that taxo
+        // this is done one taxo at a time, so we can match terms by ID, by slug, or by name
+        // and so we can apply individual weighting by that taxo
 		foreach ($this->query_vars['tax_query'] as $taxo) {
             if (strtoupper($taxo['operator']) !== 'IN' or ! is_array($taxo['terms'])) continue; // not a IN-list query, so relevance scoring is not useful for this taxo
 
-            foreach ($taxo['terms'] as $termid) {
-                $queried_term_ids[] = $termid;
+            $whichfield = $taxo['field'];
+            $wantterms = $taxo['terms'];
+
+            foreach ($this->posts as $post) {
+                // find number of terms in common between this post and this taxo's list
+                $terms_in_common = 0;
+                $thispostterms = get_the_terms($post->ID, $taxo['taxonomy']);
+
+                foreach ($thispostterms as $hasthisterm) {
+                    if (in_array($hasthisterm->{$whichfield}, $wantterms)) $terms_in_common += 1;
+                }
+
+                // express that terms-in-common as a percentage, and add to this post's relevance score
+                $ratio = (float) $terms_in_common / sizeof($wantterms);
+                $post->relevance += ($ratio * $ratio * $this->DEFAULT_WEIGHTING_TAXONOMY_RATIO);
             }
         }
-
-        if (! sizeof($queried_term_ids)) return;
-
-        // go through our posts, and find the number of terms it has in common with our query
-        // score = square percentage of those requested * weighting constant
-        foreach ($this->posts as $post) {
-            $tagged = 0;
-            foreach ($this->query_vars['tax_query'] as $taxo) {
-                foreach (get_the_terms($post->ID, $taxo['taxonomy']) as $hasthisterm) {
-// GDA TODO: this presumes that tax_query was ID#s and not slugs; a simple OR would cover both situations
-                    if (in_array($hasthisterm->term_id, $queried_term_ids)) {
-                        $tagged += 1;
-                    }
-                }
-            }
-
-            $ratio = (float) $tagged / sizeof($queried_term_ids);
-            $post->relevance += ($ratio * $ratio * $this->DEFAULT_WEIGHTING_TAXONOMY_RATIO);
-		}
 	}
 
     private function score_metakey_relevance() {
