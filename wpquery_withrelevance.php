@@ -18,7 +18,7 @@ class WP_Query_WithRelevance extends WP_Query {
 
     //
     // constructor
-    // performs a standard WP_Query but then postprocesses to add relevance, then sort by it
+    // performs a standard WP_Query but then postprocesses to add relevance, then sort by that relevance
     //
 	public function __construct($args = array()) {
         // stow and unset the orderby param
@@ -30,7 +30,7 @@ class WP_Query_WithRelevance extends WP_Query {
 			unset($args['order']);
 		}
 
-        // perform a tpyical WP_Query
+        // perform a typical WP_Query
         // then if we weren't using a relevance sorting, we're actually done
 		$this->process_args($args);
 		parent::__construct($args);
@@ -65,8 +65,8 @@ class WP_Query_WithRelevance extends WP_Query {
             $content = strtoupper($post->post_content);
 
             foreach ($words as $thisword) {
-                $post->relevance += substr_count($title, $thisword) * $this->WEIGHTING_TITLE_KEYWORD;
-                $post->relevance += substr_count($content, $thisword) * $this->WEIGHTING_CONTENT_KEYWORD;
+                $post->relevance += substr_count($title, $thisword) * $this->DEFAULT_WEIGHTING_TITLE_KEYWORD;
+                $post->relevance += substr_count($content, $thisword) * $this->DEFAULT_WEIGHTING_CONTENT_KEYWORD;
             }
 		}
     }
@@ -78,15 +78,14 @@ class WP_Query_WithRelevance extends WP_Query {
         // $total_terms = total number of terms queried, between all taxos in $queried_terms
         $queried_term_ids = array();
 		foreach ($this->query_vars['tax_query'] as $taxo) {
+            if (strtoupper($taxo['operator']) !== 'IN' or ! is_array($taxo['terms'])) continue; // not a IN-list query, so relevance scoring is not useful for this taxo
+
             foreach ($taxo['terms'] as $termid) {
                 $queried_term_ids[] = $termid;
             }
         }
-// GDA TODO: the above is applicable only for compare=IN so it's a list of IDs; skip any with compare!=IN
 
-// GDA TODO
-        // if we collected 0 $queried_term_ids then we have nothing to do
-        // all posts match/dontmatch the one given value, and further scoring is meaningless
+        if (! sizeof($queried_term_ids)) return;
 
         // go through our posts, and find the number of terms it has in common with our query
         // score = square percentage of those requested * weighting constant
@@ -102,7 +101,7 @@ class WP_Query_WithRelevance extends WP_Query {
             }
 
             $ratio = (float) $tagged / sizeof($queried_term_ids);
-            $post->relevance += ($ratio * $ratio * $this->WEIGHTING_TAXONOMY_RATIO);
+            $post->relevance += ($ratio * $ratio * $this->DEFAULT_WEIGHTING_TAXONOMY_RATIO);
 		}
 	}
 
