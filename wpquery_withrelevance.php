@@ -14,7 +14,6 @@ class WP_Query_WithRelevance extends WP_Query {
     var $DEFAULT_WEIGHTING_TITLE_KEYWORD = 1.0;
     var $DEFAULT_WEIGHTING_CONTENT_KEYWORD = 0.25;
     var $DEFAULT_WEIGHTING_TAXONOMY_RATIO = 10.0;
-    var $DEFAULT_WEIGHTING_METAKEY_RATIO = 10.0;
 
     //
     // constructor
@@ -40,7 +39,6 @@ class WP_Query_WithRelevance extends WP_Query {
         $this->initialize_relevance_scores();
         $this->score_keyword_relevance();
         $this->score_taxonomy_relevance();
-        $this->score_metakey_relevance();
         $this->orderby_relevance();
 
         // debugging; you can display this at any time to just dump the list of results
@@ -84,9 +82,9 @@ class WP_Query_WithRelevance extends WP_Query {
         // taxonomy relevance is only calculated for IN-list operations
         // for other types of queries, all posts match that value and further scoring would be pointless
 
-        // go over each taxo and each post, tag posts with number of matching terms within that taxo
-        // this is done one taxo at a time, so we can match terms by ID, by slug, or by name
-        // and so we can apply individual weighting by that taxo
+        // go over each taxo and each post
+        // increase the post relevance, based on number of terms it has in common with the terms we asked about
+        // this is done one taxo at a time, so we can match terms by ID, by slug, or by name ...  and so we can apply individual weighting by that taxo
 		foreach ($this->query_vars['tax_query'] as $taxo) {
             if (strtoupper($taxo['operator']) !== 'IN' or ! is_array($taxo['terms'])) continue; // not a IN-list query, so relevance scoring is not useful for this taxo
 
@@ -113,12 +111,6 @@ class WP_Query_WithRelevance extends WP_Query {
             }
         }
 	}
-
-    private function score_metakey_relevance() {
-        if (! $this->query_vars['meta_query']) return;  // no taxo query = skip it
-
-        //GDA TODO: this is noop right now, catch up on other improvements first
-    }
 
     private function orderby_relevance() {
         usort($this->posts, array($this, 'usort_sorting'));
