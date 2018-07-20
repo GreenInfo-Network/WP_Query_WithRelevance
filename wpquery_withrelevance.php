@@ -1,146 +1,138 @@
 <?php
-/*
- * REST endpoint: policy / analysis search API for our own Search page
- */
+//
+// a WP_Query subclass which adds a Relevance score and sorts by it
+// https://github.com/GreenInfo-Network/WP_Query_WithRelevance
+//
+if (! defined( 'WPINC')) die;
 
-// our special Relevance-calculating WP_Query
-require_once 'functions_searchapi_relevancequery.php';
-
-
-/*
- * URI is /wp-json/data/search
- * Search for Policy and Analysis entries matching the query
- * see the search page (page-search.php et al) to see what generates these queries and consumes these results
- */
-function search_api ($data=null) {
+class WP_Query_WithRelevance extends WP_Query {
     //
-    // compose the filtering for Policy posts
+    // search field DEFAULT weights
+    // the $args passed to this Query may/should specify weightings for specific taxonomies, meta keys, etc.
+    // but these act as defaults
     //
+    var $DEFAULT_WEIGHTING_TITLE_KEYWORD = 1.0;
+    var $DEFAULT_WEIGHTING_CONTENT_KEYWORD = 0.25;
+    var $DEFAULT_WEIGHTING_TAXONOMY_RATIO = 10.0;
+    var $DEFAULT_WEIGHTING_METAKEY_RATIO = 10.0;
 
-    $filter = array(
-        'post_type' => 'policy',
-		'post_status' => 'publish',
-    	'posts_per_page' => 1000000,  // effectively disable pagination
-    );
+    //
+    // constructor
+    // performs a standard WP_Query but then postprocesses to add relevance, then sort by that relevance
+    //
+	public function __construct($args = array()) {
+        // stow and unset the orderby param
+        // cuz it's not a real DB field that can be used
+		if ($args['orderby'] === 'relevance') {
+			$this->orderby = $args['orderby'];
+            $this->order = 'DESC';
+			unset($args['orderby']);
+			unset($args['order']);
+		}
 
-    if (trim(@$_GET['keyword'])) {
-        $filter['s'] = trim($_GET['keyword']);
+        // perform a typical WP_Query
+        // then if we weren't using a relevance sorting, we're actually done
+		$this->process_args($args);
+		parent::__construct($args);
+        if (! $this->orderby) return;
+
+        // okay, we're doing relevance postprocessing
+        $this->initialize_relevance_scores();
+        $this->score_keyword_relevance();
+        $this->score_taxonomy_relevance();
+        $this->score_metakey_relevance();
+        $this->orderby_relevance();
+
+        // debugging; you can display this at any time to just dump the list of results
+        //$this->display_results_so_far();
+	}
+
+    // initializing all posts' relevance scores to 0
+    private function initialize_relevance_scores() {
+		foreach ($this->posts as $post) {
+			$post->relevance = 0;
+		}
     }
 
-    if (@$_GET['topics']) { // comma-joined term IDs, shorter URLs than slugs (2-4 characters apiece, instead of 5-15), and slightly faster too
-    	$filter['tax_query'] = array(
-    		array(
-    			'taxonomy' => 'policy_topics',
-    			'field'    => 'term_id',
-    			'operator' => 'IN',
-    			'terms'    => explode(',', $_GET['topics']),
-    		),
-       	);
+    private function score_keyword_relevance() {
+        if (! $this->query_vars['s']) return; // no keyword string = this is a noop
+
+        $weight_title = @$this->query_vars['relevance_scoring']['title_keyword'];
+        $weight_content = @$this->query_vars['relevance_scoring']['content_keyword'];
+        if ($weight_title == NULL) $weight_title = $this->DEFAULT_WEIGHTING_TITLE_KEYWORD;
+        if ($weight_content == NULL) $weight_content = $this->DEFAULT_WEIGHTING_CONTENT_KEYWORD;
+        // print "score_keyword_relevance() Title keyword weight {$weight_title}\n";
+        // print "score_keyword_relevance() Content keyword weight {$weight_content}\n";
+
+        $words = strtoupper(trim($this->query_vars['s']));
+        $words = preg_split('/\s+/', $words);
+
+		foreach ($this->posts as $post) {
+			$title = strtoupper($post->post_title);
+            $content = strtoupper($post->post_content);
+
+            foreach ($words as $thisword) {
+                $post->relevance += substr_count($title, $thisword) * $weight_title;
+                $post->relevance += substr_count($content, $thisword) * $weight_content;
+            }
+		}
     }
 
-    if (@$_GET['policytypes']) { // comma-joined strings; these aren't a real taxonomy at all but arbitrary ACF strings, so are strings inswtead of ID#s
-        $filter['meta_query'] = array(
-            array(
-            	'key' => 'policy_type',
-                'compare' => 'IN',
-            	'value' => explode(',', $_GET['policytypes']),
-            )
-        );
+    private function score_taxonomy_relevance() {
+        if (! $this->query_vars['tax_query']) return;  // no taxo query = skip it
+
+        // taxonomy relevance is only calculated for IN-list operations
+        // for other types of queries, all posts match that value and further scoring would be pointless
+
+        // go over each taxo and each post, tag posts with number of matching terms within that taxo
+        // this is done one taxo at a time, so we can match terms by ID, by slug, or by name
+        // and so we can apply individual weighting by that taxo
+		foreach ($this->query_vars['tax_query'] as $taxo) {
+            if (strtoupper($taxo['operator']) !== 'IN' or ! is_array($taxo['terms'])) continue; // not a IN-list query, so relevance scoring is not useful for this taxo
+
+            $taxoslug = $taxo['taxonomy'];
+            $whichfield = $taxo['field'];
+            $wantterms = $taxo['terms'];
+
+            $taxo_weighting = @$this->query_vars['relevance_scoring']['tax_query'][$taxoslug];
+            if ($taxo_weighting === NULL) $taxo_weighting = $this->DEFAULT_WEIGHTING_TAXONOMY_RATIO;
+            // print "score_taxonomy_relevance() Taxo {$taxoslug} weight {$taxo_weighting}\n";
+
+            foreach ($this->posts as $post) {
+                // find number of terms in common between this post and this taxo's list
+                $terms_in_common = 0;
+                $thispostterms = get_the_terms($post->ID, $taxo['taxonomy']);
+
+                foreach ($thispostterms as $hasthisterm) {
+                    if (in_array($hasthisterm->{$whichfield}, $wantterms)) $terms_in_common += 1;
+                }
+
+                // express that terms-in-common as a percentage, and add to this post's relevance score
+                $ratio = (float) $terms_in_common / sizeof($wantterms);
+                $post->relevance += ($ratio * $ratio * $taxo_weighting);
+            }
+        }
+	}
+
+    private function score_metakey_relevance() {
+        if (! $this->query_vars['meta_query']) return;  // no taxo query = skip it
+
+        //GDA TODO: this is noop right now, catch up on other improvements first
     }
 
-    //
-    // sorting is really variable: some built-in WP, some ACF
-    // some a custom WP_Query subclass which creates a relevance score
-    //
-    if (! @$_GET['orderby']) $_GET['orderby'] = "relevance";
-    switch ($_GET['orderby']) {
-        case 'relevance':
-            $filter['order'] = 'DESC';
-            $filter['orderby'] = 'relevance';
-
-            $filter['relevance_scoring'] = array(
-                'tax_query' => array(
-                    'policy_topics' => 15.0,
-                ),
-                'title_keyword' => 1.0,
-                'content_keyword' => 0.25,
-            );
-
-            break;
-        case 'title':
-            $filter['order'] = 'ASC';
-            $filter['orderby'] = 'post_title';
-            break;
-        case 'pubdate':
-            $filter['order'] = 'DESC'; // most recent first
-            $filter['orderby'] = 'post_date';
-            break;
-        case 'enacted':
-            $filter['orderby'] = 'meta_value';	
-            $filter['meta_key'] = 'date_enacted';
-            $filter['order'] = 'DESC'; // recent/future first
-            break;
-        case 'policytype':
-            $filter['orderby'] = 'meta_value';	
-            $filter['meta_key'] = 'policy_type';
-            $filter['order'] = 'ASC';
-            break;
-        case 'agencytype':
-            $filter['orderby'] = 'meta_value';	
-            $filter['meta_key'] = 'agency_type';
-            $filter['order'] = 'ASC';
-            break;
+    private function orderby_relevance() {
+        usort($this->posts, array($this, 'usort_sorting'));
     }
 
-    //
-    // peform the query
-    //
-    $query = new WP_Query_WithRelevance($filter);
-
-    //
-    // construct the list of results to be sent to the client, just the fields we need in the format we want
-    //
-    $matching_policies = array();
-
-    while ($query->have_posts()) {
-        $query->the_post();
-
-        $thisresult = array(
-            'id' => get_the_id(),
-            'title' => truncate_text(trim(strip_tags(get_the_title())), 75),
-            'url' => get_the_permalink(),
-            'pubdate' => get_the_date(),
-            'date_enacted' => get_field('date_enacted') ? yyyymmdd_to_pretty(get_field('date_enacted')) : '',
-            'agency_type' => get_field('agency_type'),
-            'policy_type' => get_field('policy_type'),
-            'key_policy' => get_field('key_policy'),
-        );
-
-        $thisresult['locations'] = array();
-        while ( have_rows('locations') ): the_row();
-            $point = get_sub_field('location_marker');
-
-            $thisresult['locations'][] = array(
-                'name' => get_sub_field('location_name'),
-                'lat' => (float) $point['lat'],
-                'lng' => (float) $point['lng'],
-            );
-        endwhile;
-
-        $matching_policies[] = $thisresult;
+    private function display_results_so_far () {  // for debugging
+        foreach ($this->posts as $post) {
+            printf('%d %s = %.1f' . "\n", $post->ID, $post->post_title, $post->relevance) . "\n";
+        }
     }
 
-    //
-    // create the final output structure
-    //
-    return array(
-        'results_policy' => $matching_policies,
-    );
+    private function usort_sorting ($p, $q) {
+        // we force DESC and only trigger if orderby==='relevance' so we can keep this simple
+        if ($p->relevance == $q->relevance) return 0;
+        return $p->relevance > $q->relevance ? -1 : 1;
+    }
 }
-
-add_action('rest_api_init', function () {
-    register_rest_route('data', '/search', array(
-        'methods' => 'GET',
-        'callback' => 'search_api',
-    ));
-});
