@@ -26,13 +26,21 @@ $filter = array( // basic filter: published posts
 
 $filter['s'] = "Mayonnaise Conspiracy";  // a keyword filter
 
-$filter['tax_query'] = array(  // filter by tags
+$filter['tax_query'] = array(  // filter posts having any of these tags
     array(
     	'taxonomy' => 'tags',
     	'field'    => 'slug',
     	'operator' => 'IN',
     	'terms'    => array('sandwiches', 'condiments', 'lunch'),
     ),
+);
+
+$filter['meta_query'] = array(  // filter posts having these values for this custom field
+    array(
+    	'key' => 'manufacturer',
+        'compare' => 'IN',
+        'value' => aray('Hellmans', 'Best Foods'),
+    )
 );
 
 if ($_GET['sorting']) == 'best') {
@@ -63,11 +71,15 @@ The built-in scoring weights should work well for most folks. But, you may fine-
 
 ```
 $filter['relevance_scoring'] = array(
-    // weighting by taxonomy: the built in tags taxo plus 2 custom taxos,with different weights
+    // weighting by taxonomy: the built in "tags" taxo plus a custom taxo, with different weights
     'tax_query' => array(
         'tags' => 10.0,
         'authors' => 25.0,
-        'locations' => 20.0,
+    ),
+    // filtering by custom fields (meta fields) with different weights
+    'meta_query' => array(
+        'manufacturer' => 3.0,
+        'flavor' => 5.5,
     ),
     // the points per word occurrence, in post title and content
     'title_keyword' => 1.0,
