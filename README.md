@@ -35,14 +35,6 @@ $filter['tax_query'] = array(  // filter posts having any of these tags
     ),
 );
 
-$filter['meta_query'] = array(  // filter posts having these values for this custom field
-    array(
-    	'key' => 'manufacturer',
-        'compare' => 'IN',
-        'value' => aray('Hellmans', 'Best Foods'),
-    )
-);
-
 if ($_GET['sorting']) == 'best') {
     $filter['orderby'] = "relevance"; // this is the magic word!
 }
@@ -75,11 +67,6 @@ $filter['relevance_scoring'] = array(
     'tax_query' => array(
         'tags' => 10.0,
         'authors' => 25.0,
-    ),
-    // filtering by custom fields (meta fields) with different weights
-    'meta_query' => array(
-        'manufacturer' => 3.0,
-        'flavor' => 5.5,
     ),
     // the points per word occurrence, in post title and content
     'title_keyword' => 1.0,
